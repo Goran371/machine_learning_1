@@ -1,0 +1,243 @@
+---
+title: "Practical Machine Learning Project"
+author: "Goran Strangmark"
+date: "Sunday, November 23, 2014"
+output: 
+    html_document:
+        keep_md: true
+            
+---
+##Qualitative analysis of weight-lifting using machine learning
+
+###Executive Summary
+The objectiveof the project was to build a machine learning algorithm that could be used to predict correctness of dumbbell lifting. The dataset used was provided by Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. (Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3Jusox7tl)
+Random Forest was used to build six models. Five of them with OOB less than 1% (the last had 12.8%). Five of the models correctly predicted all 20 test cases while the simplest model scored 19 out of 20 correct predictions.
+
+###Exploratory data analysis
+Visual inspection of data frame revealed a lot of NA, empty or near empty columns. These were eliminated. The data also contained columns related to time or training set window as well as sequence number. As they shoud have no impact on qualty ot the performed exercise they were eliminated too. This left 54 variables in the training set related to sensor data and the outcome which was the human trainer's assessment of correctness or one of four frequent errors (factor variable A/B/C/D/E).
+After study of histogram, I decided to scale and center data. Sample of the histograms is provided in figure 1.
+
+
+
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+library(ggplot2)
+library(caret)
+library(randomForest)
+## download training set
+URL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+destfile=".\\data\\pml-training.csv"
+if(!file.exists(destfile)){
+        download.file(URL, destfile)
+}
+trainingDF <- read.csv(destfile)
+        
+## download testing set
+URL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+destfile=".\\data\\pml-testing.csv"
+if(!file.exists(destfile)){
+        download.file(URL, destfile)
+}
+testingDF <- read.csv(destfile)
+
+
+
+
+
+## explore train set
+  ## summary
+summary(trainingDF)
+  ## remove blank columns and largely NA only columns and the unprocessed time stamps
+trainDF <- trainingDF[,-c(1,3:7,12:36,50:59,69:83,87:101,103:112,125:139,141:150)]
+testDF <- testingDF[,-c(1,3:7,12:36,50:59,69:83,87:101,103:112,125:139,141:150)]
+rm(trainingDF)
+rm(testingDF)
+
+## is data standardized? No. standardize if required (test set too)
+
+## nzv? eliminate
+nsv <- nearZeroVar(trainDF, saveMetrics=TRUE)
+## no nsv
+
+## skewed? histogram, scatterplots, density curves; log or Box-Cox?
+columnNames <- names(trainDF)
+## par(mfrow=c(2,2))
+## i<-2
+## while (i<54){
+##   hist(trainDF[,i], main=columnNames[i])
+##   hist(trainDF[,i+1], main=columnNames[i+1])
+##   hist(trainDF[,i+2], main=columnNames[i+2])
+##   hist(trainDF[,i+3], main=columnNames[i+3])
+##   i <- i+4
+## }
+## scale and center all numeric columns
+for (i in 2:53) {
+    m <- mean(trainDF[,i])
+    s <- sd(trainDF[,i])
+    trainDF[,i]<- (trainDF[,i]- m)/s
+    testDF[,i]<- (testDF[,i]- m)/s
+}
+## par(mfrow=c(2,2))
+## i<-2
+## while (i<54){
+##   hist(trainDF[,i], main=columnNames[i])
+##   hist(trainDF[,i+1], main=columnNames[i+1])
+##   hist(trainDF[,i+2], main=columnNames[i+2])
+##   hist(trainDF[,i+3], main=columnNames[i+3])
+##   i <- i+4
+## }
+```
+####Figure 2
+```{r}
+par(mfrow=c(2,2))
+hist(trainDF[,14], main=columnNames[14], xlab="")
+hist(trainDF[,15], main=columnNames[15], xlab="")
+hist(trainDF[,16], main=columnNames[16], xlab="")
+hist(trainDF[,17], main=columnNames[17], xlab="")
+```
+###Test strategy
+To allow for testing of multiple models I elected to create 5 training folds and 5 testing fold from the **training data** while leaving the real test data set for the final predictions.
+
+###Machine learning model
+As there is a lot of non-linearity, I elected to try Random Forest.
+I built 6 different models. The first used all features and calculated **proximity**. This was rather slow but worked well. As I did not really need the proximity information I removed it in the second model but added **importance** instead as it woud allow me to eleiminate unimportant features and speed up the model while retaining accuracy.
+The subsquent models had 44, 34, 19 and 4 features.
+
+###Result
+All models except the last had less than 1% OOB error and great confusion matrix data. See figure 2. 
+Prediction on the test set was successful for all except the last model which missed one test case.
+
+```{r, echo=FALSE, cache=TRUE, results='hide', message=FALSE}
+## split training set into folds for cross validation
+trainingFolds <- createFolds(y=trainDF$classe, k=5, list=TRUE, returnTrain=TRUE) 
+testingFolds <-  createFolds(y=trainDF$classe, k=5, list=TRUE, returnTrain=FALSE)
+## build model using cross validation
+
+modFit <- randomForest(classe~., data=trainDF[trainingFolds[[1]],], method="rf", prox=TRUE)
+modFitImp <- randomForest(classe~., data=trainDF[trainingFolds[[1]],], method="rf", importance=TRUE)
+	
+
+## evaluate on subset of newtest
+prediction <- predict(modFit, newdata=trainDF[testingFolds[[1]],])
+
+errors <- 0
+for (i in 1:length(prediction)){
+    row <- as.integer(names(prediction[i]))
+    if (!trainDF[testingFolds[[1]][i],54]==prediction[i]){
+        errors < errors + 1
+    }
+}
+
+
+
+## no incorrect prediction, see if we can simplify model without losing accuracy
+## remove the 10 least important covariates
+removeList <- head(order(modFitImp$importance[,6]),10)
+modFitImp2 <- randomForest(classe~., data=trainDF[trainingFolds[[2]],-c(removeList)], method="rf", importance=TRUE)
+  ## reevaluate on next subset of newtest
+prediction2 <- predict(modFitImp2, newdata=trainDF[testingFolds[[2]],-c(removeList)])
+
+errors2 <- 0
+for (i in 1:length(prediction2)){
+    row <- as.integer(names(prediction2[i]))
+    if (!trainDF[testingFolds[[2]][i],54]==prediction2[i]){
+        errors2 < errors2 + 1
+    }
+}
+
+## no incorrect prediction, see if we can simplify model more without losing accuracy
+## remove the 20 least important covariates
+removeList <- head(order(modFitImp$importance[,6]),20)
+modFitImp3 <- randomForest(classe~., data=trainDF[trainingFolds[[3]],-c(removeList)], method="rf", importance=TRUE)
+  ## reevaluate on next subset of newtest
+prediction3 <- predict(modFitImp3, newdata=trainDF[testingFolds[[3]],-c(removeList)])
+
+errors3 <- 0
+for (i in 1:length(prediction3)){
+    row <- as.integer(names(prediction3[i]))
+    if (!trainDF[testingFolds[[3]][i],54]==prediction3[i]){
+        errors3 < errors3 + 1
+    }
+}
+
+## no incorrect prediction, see if we can simplify model more without losing accuracy
+## remove the 35 least important covariates
+removeList <- head(order(modFitImp$importance[,6]),35)
+modFitImp4 <- randomForest(classe~., data=trainDF[trainingFolds[[4]],-c(removeList)], method="rf", importance=TRUE)
+  ## reevaluate on next subset of newtest
+prediction4 <- predict(modFitImp4, newdata=trainDF[testingFolds[[4]],-c(removeList)])
+
+errors4 <- 0
+for (i in 1:length(prediction4)){
+    row <- as.integer(names(prediction4[i]))
+    if (!trainDF[testingFolds[[4]][i],54]==prediction4[i]){
+        errors4 < errors4 + 1
+    }
+}
+
+## no incorrect prediction, see if we can simplify model more without losing accuracy
+## remove the 50 least important covariates
+removeList <- head(order(modFitImp$importance[,6]),50)
+modFitImp5 <- randomForest(classe~., data=trainDF[trainingFolds[[5]],-c(removeList)], method="rf", importance=TRUE)
+  ## reevaluate on next subset of newtest
+prediction5 <- predict(modFitImp5, newdata=trainDF[testingFolds[[5]],-c(removeList)])
+
+errors5 <- 0
+for (i in 1:length(prediction5)){
+    row <- as.integer(names(prediction5[i]))
+    if (!trainDF[testingFolds[[5]][i],54]==prediction5[i]){
+        errors5 < errors5 + 1
+    }
+}
+
+
+```
+####Figure 2
+```{r}
+print("Random Forest model for 54 features (proximity on, importance off")
+modFit
+print("Random Forest model for 54 features (proximity off, importance on")
+modFitImp
+print("Random Forest model for 44 features (proximity off, importance on")
+modFitImp2
+print("Random Forest model for 34 features (proximity off, importance on")
+modFitImp3
+print("Random Forest model for 19 features (proximity off, importance on")
+modFitImp4
+print("Random Forest model for 4 features (proximity off, importance on")
+modFitImp5
+```
+
+```{r,echo=FALSE, results='hide', message=FALSE}
+
+## predict with original testing data
+savetestDF <- testDF
+testDF[,40] <- as.numeric(testDF[,40])
+testDF[,52] <- as.numeric(testDF[,52])
+testDF[,53] <- as.numeric(testDF[,53])
+testDF <- testDF[,-54]
+
+
+
+predictT0 <- predict(modFit, newdata=testDF)
+predictT1 <- predict(modFitImp, newdata=testDF)
+predictT2 <- predict(modFitImp2, newdata=testDF)
+predictT3 <- predict(modFitImp3, newdata=testDF)
+predictT4 <- predict(modFitImp4, newdata=testDF)
+predictT5 <- predict(modFitImp5, newdata=testDF)
+
+
+
+
+## Submission
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(predictT4)
+```
+
